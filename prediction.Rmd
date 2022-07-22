@@ -1,0 +1,462 @@
+---
+title: "Prediction and cross validation using EnvRtype"
+output: html_notebook
+---
+
+```{r}
+library(ggplot2)
+library(EnvRtype)
+library(superheat)
+library(reshape2)
+library(gplots)
+library(BGGE)
+library(lme4)
+library(foreach)
+library(STPGA)
+library(tidyverse)
+library(viridis)
+```
+
+```{r}
+###Environmental Similarity kernels estimated by FAWN environmental covariates
+K_E = read.csv("Environment_kernel_similarity.csv",
+               header = TRUE,
+               sep = ",")
+
+K_E = as.matrix(K_E)
+
+K_E = K_E[,-1]
+colnames(K_E) = c(1,10,11,2,3,4,5,6,7,8,9)
+rownames(K_E) = c(1,10,11,2,3,4,5,6,7,8,9)
+
+K_E = K_E[, order(as.numeric(colnames(K_E)))]
+K_E = K_E[order(as.numeric(rownames(K_E))),]
+
+###Environmental Similarity kernels estimated by historical covariates
+K_Eg = read.csv("generalized_env_kernel.csv",
+               header = TRUE,
+               sep = ";")
+
+K_Eg = as.matrix(K_Eg)
+
+colnames(K_Eg) = c(1,10,11,2,3,4,5,6,7,8,9)
+rownames(K_Eg) = c(1,10,11,2,3,4,5,6,7,8,9)
+
+
+```
+
+
+
+
+```{r}
+#Genetic relatdness kernel
+G = read.csv("G_new_Janam.csv",
+             header = TRUE,
+             sep = ",")
+
+row.names(G) = G$X
+G = G[,-1]
+G = as.matrix(G)
+G =  G[order(diag(G)),order(diag(G))]
+```
+
+```{r}
+#Genotypes BLUES
+df = read.csv("Pheno.csv",
+              header = TRUE,
+              sep = ";")
+```
+
+
+```{r}
+df$Harvest = as.factor(df$Harvest)
+df$Family =as.factor(df$Family)
+df$ID = as.factor(df$ID)
+df$comb = as.factor(paste(df$Harvest,df$ID))
+```
+
+
+
+```{r}
+#Computing model kernels
+M0 = get_kernel(K_G = list(G), 
+                y = "DMY",
+                gid = "ID",
+                env = "Harvest",
+                data = df,
+                model = "MM")
+
+M1 = get_kernel(K_E = list(ET=K_E),
+                K_G = list(G), 
+                y = "DMY",
+                gid = "ID",
+                env = "Harvest",
+                data = df,
+                model = "EMM")
+
+M2 = get_kernel(K_E = list(ET=K_Eg),
+                K_G = list(G), 
+                y = "DMY",
+                gid = "ID",
+                env = "Harvest",
+                data = df,
+                model = "EMM")
+
+
+M3 = get_kernel(K_E = NULL, 
+                K_G = list(G=G), 
+                y = "DMY",
+                gid = "ID",
+                env = "Harvest",
+                data = df,
+                model = "EMDs")
+
+M4 = get_kernel(K_E = list(ET=K_E), 
+                     K_G = list(G=G), 
+                     y = "DMY",
+                     gid = "ID",
+                     env = "Harvest",
+                     data = df,
+                     model = "EMDs")
+
+M5 = get_kernel(K_E = list(ET=K_Eg), 
+                     K_G = list(G=G), 
+                     y = "DMY",
+                     gid = "ID",
+                     env = "Harvest",
+                     data = df,
+                     model = "EMDs")
+
+M6 = get_kernel(K_E = list(ET=K_E), 
+                     K_G = list(G=G), 
+                     y = "DMY",
+                     gid = "ID",
+                     env = "Harvest",
+                     data = df,
+                     model = "RNMM")
+
+M7 = get_kernel(K_E = list(ET=K_Eg), 
+                     K_G = list(G=G), 
+                     y = "DMY",
+                     gid = "ID",
+                     env = "Harvest",
+                     data = df,
+                     model = "RNMM")
+
+
+```
+
+```{r}
+fixed = model.matrix(~ 0 + factor(Harvest), df)
+```
+
+```{r}
+#computing variance components regading all phenotypic data
+set.seed(1633)
+fit <- kernel_model(y = "DMY",
+                    env = "Harvest",
+                    gid = "ID",
+                    data = df,
+                    random = M1,
+                    fixed = fixed,
+                    iterations = 20000,
+                    thining = 10,
+                    burnin = 1000)
+``` 
+
+```{r}
+fit$VarComp
+plot(fit$yHat, df$DMY)
+```
+
+_____________________________CROSS VALIDATION__________________________________________________
+
+```{r}
+#CV0 scenario
+size = c(1:10)
+tr2 = list()
+Har = c(1:11)
+
+for(i in 1:10){
+  tr2[[i]] = matrix(0,1947,10)
+}
+
+
+for(i in 1:10){
+  set.seed(1633+i)
+  for(j in 1:10){
+  tr2[[j]][,i] = df$Harvest %in% sample(Har,j,replace = FALSE)
+  }
+}
+
+for(i in 1:10){
+  tr2[[i]] = ifelse(tr2[[i]] == 0,FALSE,TRUE)
+  
+}
+```
+
+
+```{r}
+for(i in 1:10){
+  
+  results1 = foreach(REP = 1:ncol(tr2[[i]]), .combine = "rbind") %do% {
+  
+    set.seed(1633)
+    df_NA = df
+    df_NA$DMY[!tr2[[i]][,REP]] = NA
+    
+    Z_E = model.matrix(~0+Harvest, data = df_NA)
+  
+    FIT = kernel_model(data = df_NA, 
+                       y = "DMY", 
+                       env = "Harvest", 
+                       gid = "ID",
+                       random = M1,
+                       fixed = Z_E,
+                       iterations = 20000,
+                       burnin = 2000,
+                       thining = 10)
+  
+    
+    output =data.frame(obs = df$DMY,
+                       pred = FIT$yHat,
+                       ID = df$ID,
+                       Harvest = df$Harvest,
+                       rep = REP,
+                       size = i,
+                       pop = NA)
+    
+    output$pop[tr2[[i]][,REP]] = "training"
+    output$pop[!tr2[[i]][,REP]] = "testing"
+    return(output)
+  }
+  assign(paste('results1_',i,sep=''),results1)
+}
+
+pred = rbind(results1_1,
+             results1_2,
+             results1_3,
+             results1_4,
+             results1_5,
+             results1_6,
+             results1_7,
+             results1_8,
+             results1_9,
+             results1_10)
+
+
+write.csv(pred, 'pred_EMM1_CV0.csv')
+
+```
+
+
+```{r}
+#CV00 and CV1
+size = c(1:10)
+tr2 = list()
+Har = c(1:11)
+
+for(i in 1:10){
+  tr2[[i]] = matrix(0,1947,10)
+}
+
+
+for(i in 1:10){
+  set.seed(1633+i)
+  for(j in 1:10){
+  tr2[[j]][,i] = df$Harvest %in% sample(Har,j,replace = FALSE)
+  }
+}
+
+for(i in 1:10){
+  tr2[[i]] = ifelse(tr2[[i]] == 0,FALSE,TRUE)
+  
+}
+
+
+```
+
+```{r}
+ID = subset(df, Harvest == 1)
+rep = 10
+f = 0.70
+```
+
+
+```{r}
+train_set = matrix(0,1342,10)
+for(i in 1:rep){
+set.seed(1633+i)
+trainG = ID %>% 
+  group_by(Group) %>%
+  slice_sample(prop = f, replace = FALSE)
+
+train_set[,i] = as.numeric(rownames(df[df$ID%in%trainG$ID,]))
+}
+```
+
+
+
+```{r}
+for(i in 1:10){
+  
+  results1 = foreach(REP = 1:ncol(tr2[[i]]), .combine = "rbind") %:% 
+    foreach(j = 1:ncol(train_set), .combine = 'rbind') %dopar% {
+  
+    set.seed(1633)
+    df_NA = df
+    df_NA$DMY[!tr2[[i]][,REP]] = NA
+    df_NA$DMY[-train_set[,j]] = NA
+    
+    Z_E = model.matrix(~0+Harvest, data = df_NA)
+  
+    FIT = kernel_model(data = df_NA, 
+                       y = "DMY", 
+                       env = "Harvest", 
+                       gid = "ID",
+                       random = M1,
+                       fixed = Z_E,
+                       iterations = 20000,
+                       burnin = 2000,
+                       thining = 10)
+  
+    
+    output =data.frame(obs = df$DMY,
+                       pred = FIT$yHat,
+                       ID = df$ID,
+                       Harvest = df$Harvest,
+                       rep = REP,
+                       repg = j,
+                       size = i,
+                       pop = NA,
+                       popG = NA)
+    
+    output$pop[tr2[[i]][,REP]] = "training"
+    output$pop[!tr2[[i]][,REP]] = "testing"
+    output$popG[train_set[,j]] = "training_G"
+    output$popG[-train_set[,j]] = "testing_G"
+    return(output)
+  }
+  assign(paste('results1_',i,sep=''),results1)
+}
+
+pred = rbind(results1_1,
+             results1_2,
+             results1_3,
+             results1_4,
+             results1_5,
+             results1_6,
+             results1_7,
+             results1_8,
+             results1_9,
+             results1_10)
+
+write.csv(pred, 'pred_EMM1_CV00_CV1.csv')
+```
+
+
+```{r}
+#CV2 scenario
+size = c(1:10)
+tr2 = list()
+Har = c(1:11)
+
+for(i in 1:10){
+  tr2[[i]] = matrix(0,1947,10)
+}
+
+
+for(i in 1:10){
+  set.seed(1633+i)
+  for(j in 1:10){
+  tr2[[j]][,i] = df$Harvest %in% sample(Har,j,replace = FALSE)
+  }
+}
+
+for(i in 1:10){
+  tr2[[i]] = ifelse(tr2[[i]] == 0,FALSE,TRUE)
+  
+}
+
+
+```
+
+```{r}
+Comb = subset(df)
+rep = 10
+f = 0.70
+```
+
+
+```{r}
+train_set = matrix(0,1361,10)
+for(i in 1:rep){
+set.seed(1633+i)
+trainG = Comb %>% 
+  group_by(Group) %>%
+  slice_sample(prop = f, replace = FALSE)
+
+train_set[,i] = as.numeric(rownames(df[df$comb%in%trainG$comb,]))
+}
+```
+
+
+
+
+```{r}
+for(i in 1:10){
+  
+  results1 = foreach(REP = 1:ncol(tr2[[i]]), .combine = "rbind") %:% 
+    foreach(j = 1:ncol(train_set), .combine = 'rbind') %dopar% {
+  
+    set.seed(1633)
+    df_NA = df
+    df_NA$DMY[!tr2[[i]][,REP]] = NA
+    df_NA$DMY[-train_set[,j]] = NA
+    
+    Z_E = model.matrix(~0+Harvest, data = df_NA)
+  
+    FIT = kernel_model(data = df_NA, 
+                       y = "DMY", 
+                       env = "Harvest", 
+                       gid = "ID",
+                       random = M1,
+                       fixed = Z_E,
+                       iterations = 20000,
+                       burnin = 2000,
+                       thining = 10)
+  
+    
+    output =data.frame(obs = df$DMY,
+                       pred = FIT$yHat,
+                       ID = df$ID,
+                       Harvest = df$Harvest,
+                       rep = REP,
+                       repg = j,
+                       size = i,
+                       pop = NA,
+                       popG = NA)
+    
+    output$pop[tr2[[i]][,REP]] = "training"
+    output$pop[!tr2[[i]][,REP]] = "testing"
+    output$popG[train_set[,j]] = "training_G"
+    output$popG[-train_set[,j]] = "testing_G"
+    return(output)
+  }
+  assign(paste('results1_',i,sep=''),results1)
+}
+
+pred = rbind(results1_1,
+             results1_2,
+             results1_3,
+             results1_4,
+             results1_5,
+             results1_6,
+             results1_7,
+             results1_8,
+             results1_9,
+             results1_10)
+
+write.csv(pred, 'pred_EMM1_CV2.csv')
+```
+
